@@ -263,6 +263,24 @@ def main():
 
     use_label = not args.no_label
 
+    # --- vram check ---
+    if torch.cuda.is_available():
+        vram_free = torch.cuda.mem_get_info()[0] / (1024 ** 3)
+        vram_total = torch.cuda.mem_get_info()[1] / (1024 ** 3)
+        print(f"[*] GPU VRAM: {vram_free:.1f} GiB free / {vram_total:.1f} GiB total")
+        if vram_free < 2.0:
+            print(f"[warn] only {vram_free:.1f} GiB VRAM free — other processes are using the GPU.")
+            print("  ollama, browsers, or display compositors may be holding VRAM.")
+            print("  the video model needs ~2-3 GB free at minimum.")
+            if args.let_ollama_select:
+                print("  consider running: ollama stop glm4:9b")
+                print("  then re-run (labeling will re-start ollama when needed)")
+            else:
+                print("  close other GPU processes and try again.")
+    else:
+        print("[error] no cuda GPU detected. video generation requires an NVIDIA GPU.")
+        sys.exit(1)
+
     # --- let ollama pick settings (with OOM retry loop) ---
     if args.let_ollama_select:
         oom_context = ""
@@ -281,6 +299,7 @@ def main():
             args.width = settings["width"]
             args.height = settings["height"]
 
+            pipe = None
             try:
                 out, pipe = generate_video(
                     prompt=args.prompt,
@@ -299,7 +318,8 @@ def main():
                 sys.exit(0)
             except torch.cuda.OutOfMemoryError:
                 # free the pipeline and all gpu memory before retrying
-                del pipe
+                if pipe is not None:
+                    del pipe
                 gc.collect()
                 torch.cuda.empty_cache()
                 oom_context = (
@@ -316,10 +336,6 @@ def main():
                     sys.exit(1)
 
         # if we get here all retries failed
-        sys.exit(1)
-
-    if not torch.cuda.is_available():
-        print("[error] no cuda GPU detected. video generation requires an NVIDIA GPU.")
         sys.exit(1)
 
     try:

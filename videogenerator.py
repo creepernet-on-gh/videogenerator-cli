@@ -13,11 +13,14 @@ Requirements:
 import argparse
 import json
 import os
+import gc
 import sys
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
+
+import torch  # top-level import so OOM catch works everywhere
 
 # reduce cuda memory fragmentation
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -153,9 +156,8 @@ def generate_video(
     seed: int | None,
     ollama_model: str,
     label: bool,
-) -> str:
-    """Generate a video and return the output path."""
-    import torch
+) -> tuple[str, object]:
+    """Generate a video and return (output_path, pipe)."""
     from diffusers import WanPipeline
 
     print(f"[1/3] loading model: {model}")
@@ -213,7 +215,7 @@ def generate_video(
         writer.append_data(frame)
     writer.close()
 
-    return str(out_path)
+    return str(out_path), pipe
 
 
 # --- main ---
@@ -280,7 +282,7 @@ def main():
             args.height = settings["height"]
 
             try:
-                out = generate_video(
+                out, pipe = generate_video(
                     prompt=args.prompt,
                     model=args.model,
                     output_dir=args.output,
@@ -296,29 +298,28 @@ def main():
                 print(f"\n[done] {out}")
                 sys.exit(0)
             except torch.cuda.OutOfMemoryError:
-                import torch as _torch
-                _torch.cuda.empty_cache()
+                # free the pipeline and all gpu memory before retrying
+                del pipe
+                gc.collect()
+                torch.cuda.empty_cache()
                 oom_context = (
                     f"Attempt {attempt + 1} failed with OOM.\n"
                     f"Settings that caused OOM: frames={args.frames}, steps={args.steps}, "
                     f"fps={args.fps}, width={args.width}, height={args.height}\n"
-                    f"These settings were too aggressive for the available VRAM."
+                    f"These settings were too aggressive for the available VRAM.\n"
+                    f"Other GPU processes may be using VRAM. Consider closing them."
                 )
-                print(f"\n[oom] cuda out of memory with those settings. asking ollama to try again...\n")
+                print(f"\n[oom] cuda out of memory with those settings. freeing model and asking ollama to try again...\n")
                 if attempt == 2:
                     print("[error] 3 OOM retries exhausted. use manual flags to set lower values.")
+                    print("  tip: close other GPU processes (ollama, browser, etc.) to free VRAM.")
                     sys.exit(1)
 
         # if we get here all retries failed
         sys.exit(1)
 
-    try:
-        import torch
-        if not torch.cuda.is_available():
-            print("[error] no cuda GPU detected. video generation requires an NVIDIA GPU.")
-            sys.exit(1)
-    except ImportError:
-        print("[error] pytorch not installed. run: pip install torch")
+    if not torch.cuda.is_available():
+        print("[error] no cuda GPU detected. video generation requires an NVIDIA GPU.")
         sys.exit(1)
 
     try:
@@ -327,7 +328,7 @@ def main():
         print("[error] diffusers not installed. run: pip install diffusers transformers accelerate")
         sys.exit(1)
 
-    out = generate_video(
+    out, _ = generate_video(
         prompt=args.prompt,
         model=args.model,
         output_dir=args.output,

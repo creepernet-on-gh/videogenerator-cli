@@ -89,8 +89,12 @@ def ollama_label(prompt: str, model: str, date_str: str) -> str:
     return label[:80] or "video"
 
 
-def ollama_select_settings(prompt: str, model: str) -> dict:
-    """Ask ollama to pick optimal generation settings for the prompt."""
+def ollama_select_settings(prompt: str, model: str, oom_context: str = "") -> dict:
+    """Ask ollama to pick optimal generation settings for the prompt.
+
+    If oom_context is provided, it contains info about a previous OOM failure
+    so the model can pick more conservative settings.
+    """
     system = (
         "You are a video generation parameter optimizer. Given a user's video prompt, "
         "choose the best settings for generating it. You MUST respond with ONLY valid JSON, "
@@ -106,6 +110,8 @@ def ollama_select_settings(prompt: str, model: str) -> dict:
         "Available GPU VRAM: ~8 GB (consumer GPU). Keep settings conservative."
     )
     user_msg = f"Video prompt: {prompt}"
+    if oom_context:
+        user_msg += f"\n\nIMPORTANT - The previous attempt with these settings caused a CUDA out of memory error:\n{oom_context}\n\nYou MUST pick significantly more conservative settings to avoid OOM again. Reduce frames, resolution, or both."
 
     try:
         raw = ollama_chat(system, user_msg, model, timeout=60)
@@ -253,24 +259,58 @@ def main():
             print("  either start ollama or use --no-label")
         sys.exit(1)
 
-    # --- let ollama pick settings ---
-    if args.let_ollama_select:
-        print(f"[*] asking {args.ollama} to pick settings for your prompt...")
-        settings = ollama_select_settings(args.prompt, args.ollama)
-        print(f"  ollama chose:")
-        print(f"    frames: {settings['frames']}")
-        print(f"    steps:  {settings['steps']}")
-        print(f"    fps:   {settings['fps']}")
-        print(f"    size:   {settings['width']}x{settings['height']}")
-        print(f"    reason: {settings.get('reason', 'N/A')}")
-        # override cli args (but not model, output, seed, ollama)
-        args.frames = settings["frames"]
-        args.steps = settings["steps"]
-        args.fps = settings["fps"]
-        args.width = settings["width"]
-        args.height = settings["height"]
-
     use_label = not args.no_label
+
+    # --- let ollama pick settings (with OOM retry loop) ---
+    if args.let_ollama_select:
+        oom_context = ""
+        for attempt in range(3):
+            print(f"[*] asking {args.ollama} to pick settings for your prompt...{' (retry ' + str(attempt + 1) + ')' if attempt > 0 else ''}")
+            settings = ollama_select_settings(args.prompt, args.ollama, oom_context=oom_context)
+            print(f"  ollama chose:")
+            print(f"    frames: {settings['frames']}")
+            print(f"    steps:  {settings['steps']}")
+            print(f"    fps:   {settings['fps']}")
+            print(f"    size:   {settings['width']}x{settings['height']}")
+            print(f"    reason: {settings.get('reason', 'N/A')}")
+            args.frames = settings["frames"]
+            args.steps = settings["steps"]
+            args.fps = settings["fps"]
+            args.width = settings["width"]
+            args.height = settings["height"]
+
+            try:
+                out = generate_video(
+                    prompt=args.prompt,
+                    model=args.model,
+                    output_dir=args.output,
+                    num_frames=args.frames,
+                    num_inference_steps=args.steps,
+                    fps=args.fps,
+                    width=args.width,
+                    height=args.height,
+                    seed=args.seed,
+                    ollama_model=args.ollama,
+                    label=use_label,
+                )
+                print(f"\n[done] {out}")
+                sys.exit(0)
+            except torch.cuda.OutOfMemoryError:
+                import torch as _torch
+                _torch.cuda.empty_cache()
+                oom_context = (
+                    f"Attempt {attempt + 1} failed with OOM.\n"
+                    f"Settings that caused OOM: frames={args.frames}, steps={args.steps}, "
+                    f"fps={args.fps}, width={args.width}, height={args.height}\n"
+                    f"These settings were too aggressive for the available VRAM."
+                )
+                print(f"\n[oom] cuda out of memory with those settings. asking ollama to try again...\n")
+                if attempt == 2:
+                    print("[error] 3 OOM retries exhausted. use manual flags to set lower values.")
+                    sys.exit(1)
+
+        # if we get here all retries failed
+        sys.exit(1)
 
     try:
         import torch

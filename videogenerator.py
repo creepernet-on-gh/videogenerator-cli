@@ -105,9 +105,13 @@ def generate_video(
 
     print(f"[1/3] loading model: {model}")
     pipe = WanPipeline.from_pretrained(model, torch_dtype=torch.bfloat16)
-    # sequential offload: moves every sub-module to gpu individually then back to cpu.
-    # slower than model offload but fits in low vram (6-8 GB).
-    pipe.enable_sequential_cpu_offload(device="cuda")
+    # vae tiling: decodes in small tiles instead of all frames at once.
+    # this is what actually kills vram during decode.
+    pipe.vae.enable_tiling()
+    pipe.vae.enable_slicing()
+    # model offload: keeps pipeline components on cpu, moves one at a time to gpu.
+    # much faster than sequential offload, works with vae tiling to avoid oom.
+    pipe.enable_model_cpu_offload()
 
     generator = torch.Generator(device="cuda")
     if seed is not None:

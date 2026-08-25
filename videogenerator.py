@@ -11,9 +11,10 @@ Requirements:
 """
 
 import argparse
+import gc
 import json
 import os
-import gc
+import subprocess
 import sys
 import urllib.request
 import urllib.error
@@ -37,6 +38,36 @@ OLLAMA_API = "http://localhost:11434"
 
 
 # --- ollama helpers ---
+
+def ollama_stop_model(model: str) -> bool:
+    """Stop a loaded ollama model to free its GPU VRAM."""
+    try:
+        subprocess.run(
+            ["ollama", "stop", model],
+            capture_output=True, timeout=30,
+        )
+        return True
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def ollama_ensure_stopped(model: str) -> None:
+    """Stop ollama model if it's using GPU VRAM."""
+    try:
+        req = urllib.request.Request(f"{OLLAMA_API}/api/ps")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            running = json.loads(resp.read().decode())
+            for entry in running.get("models", []):
+                if entry.get("name", "").startswith(model):
+                    print(f"[*] stopping ollama model '{model}' to free VRAM...")
+                    ollama_stop_model(model)
+                    import time
+                    time.sleep(1)
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    break
+    except Exception:
+        pass
 
 def ollama_running() -> bool:
     """Check if ollama is reachable."""
@@ -263,20 +294,14 @@ def main():
 
     use_label = not args.no_label
 
+    # --- stop ollama model to free VRAM for generation ---
+    ollama_ensure_stopped(args.ollama)
+
     # --- vram check ---
     if torch.cuda.is_available():
         vram_free = torch.cuda.mem_get_info()[0] / (1024 ** 3)
         vram_total = torch.cuda.mem_get_info()[1] / (1024 ** 3)
         print(f"[*] GPU VRAM: {vram_free:.1f} GiB free / {vram_total:.1f} GiB total")
-        if vram_free < 2.0:
-            print(f"[warn] only {vram_free:.1f} GiB VRAM free — other processes are using the GPU.")
-            print("  ollama, browsers, or display compositors may be holding VRAM.")
-            print("  the video model needs ~2-3 GB free at minimum.")
-            if args.let_ollama_select:
-                print("  consider running: ollama stop glm4:9b")
-                print("  then re-run (labeling will re-start ollama when needed)")
-            else:
-                print("  close other GPU processes and try again.")
     else:
         print("[error] no cuda GPU detected. video generation requires an NVIDIA GPU.")
         sys.exit(1)

@@ -100,8 +100,8 @@ def generate_video(
     from diffusers import WanPipeline
 
     print(f"[1/3] loading model: {model}")
-    pipe = WanPipeline.from_pretrained(model, torch_dtype=torch.float16)
-    pipe.to("cuda")
+    pipe = WanPipeline.from_pretrained(model, torch_dtype=torch.bfloat16)
+    pipe.enable_model_cpu_offload()
 
     generator = torch.Generator(device="cuda")
     if seed is not None:

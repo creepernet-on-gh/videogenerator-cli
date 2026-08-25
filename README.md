@@ -7,10 +7,11 @@ AI video generation from the terminal. Generates videos with Wan2.1 or HunyuanVi
 ## how it works
 
 1. you give it a text prompt
-2. it generates a video using a diffusers pipeline (Wan2.1 by default)
-3. it sends the prompt + current date to your local Ollama instance
-4. Ollama generates a clean filename label
-5. the video is saved as `<label-2026-08-25>.mp4`
+2. (optional) Ollama picks optimal frames, steps, fps, and resolution based on your prompt
+3. it generates a video using a diffusers pipeline (Wan2.1 by default)
+4. it sends the prompt + current date to your local Ollama instance
+5. Ollama generates a clean filename label
+6. the video is saved as `<label-2026-08-25>.mp4`
 
 ## requirements
 
@@ -47,6 +48,9 @@ python videogenerator.py "sunset over mountains" --width 1280 --height 720 --fra
 # reproducible with seed
 python videogenerator.py "rain on a window" --seed 42
 
+# let ollama pick settings based on your prompt
+python videogenerator.py "a slow drone shot over a foggy forest at dawn" --let-ollama-select
+
 # skip ollama labeling (uses raw prompt as filename)
 python videogenerator.py "abstract neon lights" --no-label
 
@@ -64,13 +68,14 @@ python videogenerator.py "cherry blossoms" --ollama llama3.1:8b
 | `prompt` | (required) | text prompt describing the video |
 | `-m, --model` | `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` | diffusers model ID |
 | `-o, --output` | `./output` | output directory |
-| `-f, --frames` | `81` | number of frames to generate |
+| `-f, --frames` | `41` | number of frames to generate |
 | `-s, --steps` | `30` | inference steps |
 | `--fps` | `16` | output video FPS |
 | `--width` | `832` | frame width in pixels |
 | `--height` | `480` | frame height in pixels |
 | `--seed` | random | random seed for reproducibility |
 | `--ollama` | `glm4:9b` | ollama model for filename labeling |
+| `--let-ollama-select` | off | let ollama choose frames/steps/fps/width/height |
 | `--no-label` | off | skip ollama, use prompt slug as filename |
 
 ## supported models

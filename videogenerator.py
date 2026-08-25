@@ -45,17 +45,8 @@ def ollama_running() -> bool:
         return False
 
 
-def ollama_label(prompt: str, model: str, date_str: str) -> str:
-    """Ask ollama to generate a filename label from the prompt and date."""
-    system = (
-        "You are a filename generator. The user will give you a video prompt and a date. "
-        "Respond with ONLY a short descriptive filename label (no extension, no slashes, "
-        "no special characters, lowercase, spaces replaced with dashes, max 60 chars). "
-        "Include the date at the end in YYYY-MM-DD format. "
-        "Do not include any explanation or extra text."
-    )
-    user_msg = f"Prompt: {prompt}\nDate: {date_str}"
-
+def ollama_chat(system: str, user_msg: str, model: str, timeout: int = 120) -> str:
+    """Send a chat completion to ollama and return the response text."""
     payload = json.dumps({
         "model": model,
         "system": system,
@@ -70,10 +61,24 @@ def ollama_label(prompt: str, model: str, date_str: str) -> str:
         headers={"Content-Type": "application/json"},
     )
 
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        result = json.loads(resp.read().decode())
+        return result.get("response", "").strip()
+
+
+def ollama_label(prompt: str, model: str, date_str: str) -> str:
+    """Ask ollama to generate a filename label from the prompt and date."""
+    system = (
+        "You are a filename generator. The user will give you a video prompt and a date. "
+        "Respond with ONLY a short descriptive filename label (no extension, no slashes, "
+        "no special characters, lowercase, spaces replaced with dashes, max 60 chars). "
+        "Include the date at the end in YYYY-MM-DD format. "
+        "Do not include any explanation or extra text."
+    )
+    user_msg = f"Prompt: {prompt}\nDate: {date_str}"
+
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            result = json.loads(resp.read().decode())
-            label = result.get("response", "").strip()
+        label = ollama_chat(system, user_msg, model)
     except Exception as e:
         print(f"  [warn] ollama labeling failed: {e}, using fallback")
         label = prompt[:50].lower().replace(" ", "-")
@@ -82,6 +87,50 @@ def ollama_label(prompt: str, model: str, date_str: str) -> str:
     label = label.replace("/", "-").replace("\\", "-").replace(" ", "-")
     label = "".join(c for c in label if c.isalnum() or c in "-_.")
     return label[:80] or "video"
+
+
+def ollama_select_settings(prompt: str, model: str) -> dict:
+    """Ask ollama to pick optimal generation settings for the prompt."""
+    system = (
+        "You are a video generation parameter optimizer. Given a user's video prompt, "
+        "choose the best settings for generating it. You MUST respond with ONLY valid JSON, "
+        "no markdown, no explanation, no code blocks. The JSON must have exactly these keys:\n"
+        '{"frames": <int>, "steps": <int>, "fps": <int>, "width": <int>, "height": <int, "reason": <short string>}\n\n'
+        "Rules:\n"
+        "- frames: must be a multiple of 4, between 17 and 161. longer/more complex scenes need more frames.\n"
+        "- steps: between 20 and 50. detailed scenes need more steps, simple ones fewer.\n"
+        "- fps: 8, 12, 16, or 24. slow/cinematic = 8-12, normal = 16, fast action = 24.\n"
+        "- width and height: must be multiples of 16. pick from 480p (848x480), 720p (1280x720), or 360p (640x360).\n"
+        "  use lower res for complex scenes to save memory, higher for simple/static scenes.\n"
+        "- reason: one sentence explaining your choice.\n\n"
+        "Available GPU VRAM: ~8 GB (consumer GPU). Keep settings conservative."
+    )
+    user_msg = f"Video prompt: {prompt}"
+
+    try:
+        raw = ollama_chat(system, user_msg, model, timeout=60)
+        # strip markdown code blocks if the model wraps them
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1]
+            if raw.endswith("```"):
+                raw = raw[:-3]
+            raw = raw.strip()
+        settings = json.loads(raw)
+        # clamp values to safe ranges
+        settings["frames"] = max(17, min(161, int(settings.get("frames", 41))))
+        # round to multiple of 4
+        settings["frames"] = settings["frames"] - (settings["frames"] % 4)
+        if settings["frames"] < 17:
+            settings["frames"] = 17
+        settings["steps"] = max(20, min(50, int(settings.get("steps", 30))))
+        settings["fps"] = int(settings.get("fps", 16))
+        settings["width"] = int(settings.get("width", 832))
+        settings["height"] = int(settings.get("height", 480))
+        return settings
+    except Exception as e:
+        print(f"  [warn] ollama settings selection failed: {e}, using defaults")
+        return {"frames": 41, "steps": 30, "fps": 16, "width": 832, "height": 480, "reason": "fallback defaults"}
 
 
 # --- video generation ---
@@ -189,15 +238,39 @@ def main():
                         help=f"ollama model for labeling (default: {DEFAULT_OLLAMA})")
     parser.add_argument("--no-label", action="store_true",
                         help="skip ollama labeling, use raw prompt slug")
+    parser.add_argument("--let-ollama-select", action="store_true",
+                        help="let ollama choose frames, steps, fps, width, height based on your prompt")
 
     args = parser.parse_args()
 
-    # --- checks ---
-    use_label = not args.no_label
-    if use_label and not ollama_running():
+    # --- ollama check ---
+    needs_ollama = (not args.no_label) or args.let_ollama_select
+    if needs_ollama and not ollama_running():
         print(f"[warn] ollama not running at {OLLAMA_API}")
-        print("  either start ollama or use --no-label")
+        if args.let_ollama_select:
+            print("  --let-ollama-select requires ollama. start it or remove the flag.")
+        else:
+            print("  either start ollama or use --no-label")
         sys.exit(1)
+
+    # --- let ollama pick settings ---
+    if args.let_ollama_select:
+        print(f"[*] asking {args.ollama} to pick settings for your prompt...")
+        settings = ollama_select_settings(args.prompt, args.ollama)
+        print(f"  ollama chose:")
+        print(f"    frames: {settings['frames']}")
+        print(f"    steps:  {settings['steps']}")
+        print(f"    fps:   {settings['fps']}")
+        print(f"    size:   {settings['width']}x{settings['height']}")
+        print(f"    reason: {settings.get('reason', 'N/A')}")
+        # override cli args (but not model, output, seed, ollama)
+        args.frames = settings["frames"]
+        args.steps = settings["steps"]
+        args.fps = settings["fps"]
+        args.width = settings["width"]
+        args.height = settings["height"]
+
+    use_label = not args.no_label
 
     try:
         import torch

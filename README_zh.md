@@ -7,10 +7,11 @@
 ## 工作原理
 
 1. 输入文字提示词
-2. 使用 diffusers 管道生成视频（默认 Wan2.1）
-3. 将提示词和当前日期发送给本地 Ollama
-4. Ollama 生成一个简洁的文件名标签
-5. 视频保存为 `<标签-2026-08-25>.mp4`
+2. （可选）Ollama 根据提示词自动选择最佳帧数、步数、帧率和分辨率
+3. 使用 diffusers 管道生成视频（默认 Wan2.1）
+4. 将提示词和当前日期发送给本地 Ollama
+5. Ollama 生成一个简洁的文件名标签
+6. 视频保存为 `<标签-2026-08-25>.mp4`
 
 ## 环境要求
 
@@ -47,6 +48,9 @@ python videogenerator.py "山上的日落" --width 1280 --height 720 --frames 16
 # 指定种子，可复现结果
 python videogenerator.py "窗上的雨" --seed 42
 
+# 让 Ollama 根据提示词自动选择生成参数
+python videogenerator.py "清晨雾中森林的慢速无人机航拍" --let-ollama-select
+
 # 跳过 Ollama 命名（直接用提示词作为文件名）
 python videogenerator.py "抽象霓虹灯" --no-label
 
@@ -64,13 +68,14 @@ python videogenerator.py "樱花" --ollama llama3.1:8b
 | `prompt` | （必填） | 描述视频的文字提示词 |
 | `-m, --model` | `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` | diffusers 模型 ID |
 | `-o, --output` | `./output` | 输出目录 |
-| `-f, --frames` | `81` | 生成帧数 |
+| `-f, --frames` | `41` | 生成帧数 |
 | `-s, --steps` | `30` | 推理步数 |
 | `--fps` | `16` | 输出视频帧率 |
 | `--width` | `832` | 帧宽度（像素） |
 | `--height` | `480` | 帧高度（像素） |
 | `--seed` | 随机 | 随机种子，用于复现结果 |
 | `--ollama` | `glm4:9b` | 用于文件命名的 Ollama 模型 |
+| `--let-ollama-select` | 关闭 | 让 Ollama 自动选择帧数/步数/帧率/分辨率 |
 | `--no-label` | 关闭 | 跳过 Ollama，直接用提示词作为文件名 |
 
 ## 支持的模型

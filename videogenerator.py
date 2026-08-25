@@ -12,16 +12,20 @@ Requirements:
 
 import argparse
 import json
+import os
 import sys
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 
+# reduce cuda memory fragmentation
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 # --- config ---
 DEFAULT_MODEL = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
 DEFAULT_OLLAMA = "glm4:9b"
-DEFAULT_FRAMES = 81
+DEFAULT_FRAMES = 41
 DEFAULT_STEPS = 30
 DEFAULT_FPS = 16
 DEFAULT_WIDTH = 832
@@ -101,7 +105,9 @@ def generate_video(
 
     print(f"[1/3] loading model: {model}")
     pipe = WanPipeline.from_pretrained(model, torch_dtype=torch.bfloat16)
-    pipe.enable_model_cpu_offload()
+    # sequential offload: moves every sub-module to gpu individually then back to cpu.
+    # slower than model offload but fits in low vram (6-8 GB).
+    pipe.enable_sequential_cpu_offload(device="cuda")
 
     generator = torch.Generator(device="cuda")
     if seed is not None:
